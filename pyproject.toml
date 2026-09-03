@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keelson-connector-pc"
+version = "0.1.0"
+description = "Keelson/Zenoh connector publishing computer health: CPU, memory, storage, network, sensors"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    # 0.5.3 is the newest keelson actually published to PyPI; 0.5.4 was tagged
+    # but never released. publishing.py picks up subject-driven QoS on its own
+    # if a newer SDK is installed.
+    "keelson>=0.5.3",
+    "psutil>=6.0",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black==25.9.0",
+    "pylint==4.0.2",
+    "pytest==8.3.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["keelson_connector_pc*"]
+
+[tool.setuptools.package-data]
+keelson_connector_pc = ["subjects.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end test that opens a real Zenoh session",
+]
+
+[tool.black]
+extend-exclude = '_pb2\.py'

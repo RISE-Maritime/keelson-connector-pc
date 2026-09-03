@@ -1,0 +1,21 @@
+[MAIN]
+ignore-patterns=.*_pb2\.py
+
+[MESSAGES CONTROL]
+disable=
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    too-many-arguments,
+    too-many-positional-arguments,
+    too-many-instance-attributes,
+    too-many-locals,
+    too-many-branches,
+    duplicate-code,
+    fixme
+
+[FORMAT]
+max-line-length=100
+
+[DESIGN]
+max-attributes=20

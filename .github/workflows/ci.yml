@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The connector's whole point is being cross-platform, and the psutil
+        # differences it works around (no sensors_temperatures off Linux,
+        # placeholder cpu_freq on macOS, drive letters on Windows) only show up
+        # if all three actually run the suite.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        run: uv pip install --system ".[dev]"
+      - name: Lint
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          black --check bin keelson_connector_pc tests
+          pylint bin keelson_connector_pc
+      - name: Unit tests
+        run: pytest -vv -m "not e2e"
+      - name: End-to-end tests
+        run: pytest -vv -m e2e
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t keelson-connector-pc .
+      - name: Smoke test the entry point
+        run: docker run --rm keelson-connector-pc "pc2keelson --help"

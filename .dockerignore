@@ -1,0 +1,40 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+.github
+
+# OS / editor noise
+.DS_Store
+.vscode
+.idea
+
+# Python local state
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+env
+*.egg-info
+
+# Docs & metadata — the image doesn't need them, and their changes shouldn't
+# bust the build cache. README.md is excepted because pyproject.toml's
+# `readme = "README.md"` reads it at install-build time.
+doc
+*.md
+!README.md
+LICENSE
+
+# Dev-only paths
+tests
+.pytest_cache
+.claude
+.devcontainer
+.pylintrc
+
+# Build artifacts
+build
+dist
+htmlcov
+.coverage

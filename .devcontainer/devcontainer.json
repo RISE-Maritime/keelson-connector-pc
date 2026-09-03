@@ -1,0 +1,31 @@
+// For format details, see https://aka.ms/devcontainer.json
+{
+	"name": "Keelson PC Connector",
+	"image": "mcr.microsoft.com/devcontainers/python:dev-3.13-bookworm",
+	"features": {
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {}
+	},
+	// --network=host so the container can reach a Zenoh router by multicast
+	// scouting. --pid=host so process_* metrics see the real process table
+	// rather than the container's; without it the connector still runs, it
+	// just reports the container.
+	"runArgs": [
+		"--network=host",
+		"--pid=host",
+		"--name=devcon-pc"
+	],
+	"remoteUser": "root",
+	"postCreateCommand": "curl -LsSf https://astral.sh/uv/install.sh | sh && export PATH=\"$HOME/.local/bin:$PATH\" && uv pip install --system -e '.[dev]'",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"github.vscode-github-actions",
+				"ms-python.black-formatter",
+				"ms-python.pylint",
+				"Anthropic.claude-code",
+				"streetsidesoftware.code-spell-checker",
+				"ms-azuretools.vscode-docker"
+			]
+		}
+	}
+}

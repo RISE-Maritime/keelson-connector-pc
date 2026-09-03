@@ -1,0 +1,78 @@
+# Compute host telemetry — subjects published by keelson-connector-pc.
+#
+# The machine Keelson runs ON, not the vessel it steers. Reported per host;
+# source_id distinguishes the instance within the host, e.g.
+#   pc            pc/core/3      pc/disk/data    pc/net/eth0
+#   pc/battery    pc/sensor/k10temp             pc/process/python
+#
+# This file is a verbatim copy of the block added to
+# keelson/messages/subjects.yaml. It is registered at startup via
+# keelson.add_well_known_subjects_and_proto_definitions() so the connector
+# resolves its own subjects even when the installed keelson release predates
+# them. Once a keelson release ships these, this file becomes redundant --
+# harmless, since registration is an idempotent dict update.
+#
+# Naming follows protocol-specification.md 2.2.2 <entity>_<property>_<unit>.
+# Every subject maps to an existing keelson.Timestamped* primitive; no new
+# .proto is required.
+
+# --- Host identity and capability (slow-changing) --------------------------
+host_name:                              keelson.TimestampedString
+host_operating_system:                  keelson.TimestampedString  # Linux, Darwin, Windows
+host_operating_system_version:          keelson.TimestampedString
+host_kernel_version:                    keelson.TimestampedString
+host_architecture:                      keelson.TimestampedString  # x86_64, arm64, ...
+host_boot_time:                         keelson.TimestampedTimestamp
+# uptime rides the existing device_uptime_duration subject
+
+# --- CPU -------------------------------------------------------------------
+cpu_model:                              keelson.TimestampedString
+cpu_core_count:                         keelson.TimestampedInt     # physical
+cpu_thread_count:                       keelson.TimestampedInt     # logical
+cpu_load_pct:                           keelson.TimestampedFloat   # whole host
+cpu_core_load_pct:                      keelson.TimestampedFloat   # source_id suffix = core index
+cpu_frequency_mhz:                      keelson.TimestampedFloat
+cpu_temperature_celsius:                keelson.TimestampedFloat
+cpu_load_average_1min:                  keelson.TimestampedFloat   # runnable procs; unitless by definition
+cpu_load_average_5min:                  keelson.TimestampedFloat
+cpu_load_average_15min:                 keelson.TimestampedFloat
+
+# --- Memory and swap -------------------------------------------------------
+memory_total_bytes:                     keelson.TimestampedInt64
+memory_used_bytes:                      keelson.TimestampedInt64
+memory_available_bytes:                 keelson.TimestampedInt64
+memory_used_pct:                        keelson.TimestampedFloat
+swap_total_bytes:                       keelson.TimestampedInt64
+swap_used_bytes:                        keelson.TimestampedInt64
+swap_used_pct:                          keelson.TimestampedFloat
+
+# --- Storage ---------------------------------------------------------------
+# source_id carries the mountpoint (usage) or the block device (throughput).
+disk_total_bytes:                       keelson.TimestampedInt64
+disk_used_bytes:                        keelson.TimestampedInt64
+disk_free_bytes:                        keelson.TimestampedInt64
+disk_used_pct:                          keelson.TimestampedFloat
+disk_read_bytes_per_second:             keelson.TimestampedFloat
+disk_write_bytes_per_second:            keelson.TimestampedFloat
+
+# --- Host network interfaces -----------------------------------------------
+# source_id carries the interface name. Distinct from network_status, which is
+# end-to-end link quality rather than NIC counters.
+network_interface_up:                   keelson.TimestampedBool
+network_interface_speed_mbps:           keelson.TimestampedFloat
+network_interface_rx_bitrate_bps:       keelson.TimestampedFloat
+network_interface_tx_bitrate_bps:       keelson.TimestampedFloat
+network_interface_rx_bytes_total:       keelson.TimestampedInt64   # cumulative since boot
+network_interface_tx_bytes_total:       keelson.TimestampedInt64
+network_interface_error_count:          keelson.TimestampedInt64
+network_interface_drop_count:           keelson.TimestampedInt64
+
+# --- Cooling ---------------------------------------------------------------
+fan_rate_rpm:                           keelson.TimestampedFloat
+
+# --- Processes -------------------------------------------------------------
+# source_id carries the process name.
+process_count:                          keelson.TimestampedInt
+process_cpu_load_pct:                   keelson.TimestampedFloat
+process_memory_used_pct:                keelson.TimestampedFloat
+process_memory_used_bytes:              keelson.TimestampedInt64

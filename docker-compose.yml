@@ -1,0 +1,45 @@
+# Keelson PC connector — host monitoring
+#
+# A container sees its own namespaces, not the host's. Without the settings
+# below the connector would faithfully report the *container's* CPU share,
+# process list and overlay filesystem, which is not what anyone asking "is the
+# disk full?" wants to know. Three things make it report the host instead:
+#
+#   pid: host          the host's process table, for process_* metrics
+#   network_mode: host the host's interfaces, for network_interface_* metrics
+#   the bind mounts    the host's /proc and filesystem, via the two flags below
+#
+# --procfs-path points psutil at the host's /proc; --host-root strips the
+# bind-mount prefix so mountpoints are labelled the way the host names them
+# (/host/root/var reports as /var, not as mnt_host_root_var).
+#
+# On macOS and Windows, Docker runs a Linux VM, so this reports that VM rather
+# than your laptop. Run the connector directly on the host there:
+#   uv run bin/pc2keelson.py -r rise -e $(hostname)
+
+services:
+  pc:
+    build: .
+    container_name: keelson-connector-pc
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /:/host/root:ro
+    command:
+      - >
+        pc2keelson
+        --log-level 20
+        -r rise
+        -e nuc01
+        -s pc
+        --interval 5
+        --procfs-path /host/proc
+        --host-root /host/root
+        --disk-mountpoint /host/root
+
+# To reach a router that multicast scouting cannot find, append to `command`:
+#   --mode client --connect tcp/192.168.1.10:7447
+# For access control or QoS the flags cannot express, mount a JSON5 config and
+# pass --zenoh-config /etc/zenoh/fleet.json5 (or set ZENOH_CONFIG).
