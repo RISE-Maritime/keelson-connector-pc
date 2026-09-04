@@ -2,7 +2,8 @@
 
 ``collectors`` samples the machine with psutil and knows nothing about Zenoh;
 ``publishing`` turns those samples into Keelson envelopes and knows nothing
-about psutil. ``bin/pc2keelson.py`` is the only place the two meet.
+about psutil. ``cli`` is the only place the two meet, and is deliberately not
+imported here so that using this as a library pulls in no argparse wiring.
 """
 
 from .collectors import (

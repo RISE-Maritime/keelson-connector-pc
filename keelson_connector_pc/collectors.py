@@ -13,6 +13,7 @@ import platform
 import re
 import subprocess
 import time
+from collections import Counter
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import psutil
@@ -84,6 +85,13 @@ _UNSAFE_KEY_CHARS = re.compile(r"[^a-z0-9_-]+")
 # dropped for the same reason macOS temperatures are: a missing sample is
 # honest, a wrong one is not.
 MIN_PLAUSIBLE_CPU_MHZ = 100.0
+
+# How long to wait before re-probing a mountpoint that raised. A permanently
+# unreadable mount (a macOS firmlink, a host mount the container may not read)
+# backs off to the ceiling and costs one syscall every few minutes; a mount
+# that was merely not ready yet is picked up on the first probe that succeeds.
+MOUNT_RETRY_INITIAL_S = 30.0
+MOUNT_RETRY_MAX_S = 300.0
 
 
 def sanitise(value: str, *, fallback: str = "unknown") -> str:
@@ -189,6 +197,31 @@ def collect_host_info() -> List[Reading]:
     return readings
 
 
+def disambiguated_labels(chip: str, entries: Sequence[Any]) -> List[str]:
+    """One unique, stable source-id label per sensor entry.
+
+    A chip name does not identify a device. Two NVMe drives both report as
+    chip "nvme" with a "Composite" and a "Sensor 1" reading each, so the label
+    alone would put two different temperatures on one key in the same cycle and
+    let arrival order pick the winner -- observed on real hardware reporting
+    38.85 and 39.85 for the same key.
+
+    Only labels that actually repeat get their index appended, so the common
+    case (coretemp's already-distinct "Core N") keeps its clean name. Counting
+    happens after sanitising, so two labels that differ only in characters
+    sanitise() strips cannot collide either.
+    """
+    labels = [
+        sanitise(entry.label or f"{chip}_{index}")
+        for index, entry in enumerate(entries)
+    ]
+    counts = Counter(labels)
+    return [
+        label if counts[label] == 1 else f"{label}_{index}"
+        for index, label in enumerate(labels)
+    ]
+
+
 class Sampler:
     """Holds the cross-cycle state the live metrics need.
 
@@ -237,9 +270,12 @@ class Sampler:
         self._prev_net: Optional[Tuple[float, Dict[str, Any]]] = None
         self._prev_disk_io: Optional[Tuple[float, Dict[str, Any]]] = None
         self._procs: Dict[int, psutil.Process] = {}
-        # Mountpoints that raised once. Re-probing them every cycle just burns
-        # syscalls and log lines on something that will not start working.
-        self._skip_mountpoints: set = set()
+        # Mountpoints that raised, and when to try them again. Re-probing every
+        # cycle burns syscalls and log lines, but never re-probing means a mount
+        # that is merely slow to appear -- NFS, an external disk, an encrypted
+        # volume unlocked after boot -- stays missing until the process
+        # restarts. Back off instead of giving up.
+        self._mount_retry: Dict[str, Tuple[float, float]] = {}
         self._warned_cpu_freq = False
 
     # -- lifecycle ---------------------------------------------------------
@@ -257,11 +293,46 @@ class Sampler:
         if self.processes:
             self._refresh_processes()
 
-    def sample(self) -> List[Reading]:
+    def _vital_cpu(self) -> List[Reading]:
+        return [Reading("cpu_load_pct", "", psutil.cpu_percent(interval=None))]
+
+    def _vital_memory(self) -> List[Reading]:
+        return [Reading("memory_used_pct", "", psutil.virtual_memory().percent)]
+
+    def sample_vitals(self) -> List[Reading]:
+        """The fast tier: one /proc/stat read and one /proc/meminfo read.
+
+        These two subjects are published *only* here, never by collect_cpu or
+        collect_memory. That is load-bearing rather than tidiness:
+        psutil.cpu_percent(interval=None) measures since the previous call
+        anywhere in the process, so a second call site on a different cadence
+        would silently halve both windows -- no error, just a wrong number.
+        Keep cpu_load_pct to exactly one caller.
+
+        Guarded per group like sample(), so a failing CPU read still publishes
+        memory.
+        """
+        readings: List[Reading] = []
+        for enabled, collect, name in (
+            (self.cpu, self._vital_cpu, "cpu"),
+            (self.memory, self._vital_memory, "memory"),
+        ):
+            if not enabled:
+                continue
+            try:
+                readings.extend(collect())
+            except Exception:  # pylint: disable=broad-except
+                logger.exception(
+                    "Vitals collector %r failed; skipping this cycle", name
+                )
+        return readings
+
+    def sample(self, process_details: bool = True) -> List[Reading]:
         """One cycle of every enabled live metric group.
 
         A failure in one group must not cost the others their cycle, so each is
-        guarded separately and logged rather than raised.
+        guarded separately and logged rather than raised. ``process_details``
+        is passed through to ``collect_processes``; see its docstring.
         """
         readings: List[Reading] = []
         for enabled, collect, name in (
@@ -270,7 +341,11 @@ class Sampler:
             (self.disk, self.collect_disk, "disk"),
             (self.network, self.collect_network, "network"),
             (self.sensors, self.collect_sensors, "sensors"),
-            (self.processes, self.collect_processes, "processes"),
+            (
+                self.processes,
+                lambda: self.collect_processes(details=process_details),
+                "processes",
+            ),
         ):
             if not enabled:
                 continue
@@ -283,7 +358,10 @@ class Sampler:
     # -- CPU ---------------------------------------------------------------
 
     def collect_cpu(self) -> List[Reading]:
-        readings = [Reading("cpu_load_pct", "", psutil.cpu_percent(interval=None))]
+        # cpu_load_pct is deliberately absent: it rides the vitals cadence, in
+        # sample_vitals(). percpu=True below keeps a separate psutil baseline
+        # from the scalar call, so the two do not interfere.
+        readings: List[Reading] = []
 
         if self.per_core:
             for index, load in enumerate(
@@ -328,7 +406,7 @@ class Sampler:
             Reading("memory_total_bytes", "", vm.total),
             Reading("memory_available_bytes", "", vm.available),
             Reading("memory_used_bytes", "", vm.total - vm.available),
-            Reading("memory_used_pct", "", vm.percent),
+            # memory_used_pct rides the vitals cadence, in sample_vitals().
         ]
 
         sm = psutil.swap_memory()
@@ -355,19 +433,33 @@ class Sampler:
 
     def collect_disk(self) -> List[Reading]:
         readings: List[Reading] = []
+        now = time.monotonic()
 
         for mountpoint in self._mountpoints():
-            if mountpoint in self._skip_mountpoints:
+            retry = self._mount_retry.get(mountpoint)
+            if retry is not None and now < retry[0]:
                 continue
             try:
                 usage = psutil.disk_usage(mountpoint)
-            except (OSError, PermissionError) as exc:
+            except OSError as exc:
                 # Unreadable mounts are normal: macOS puts firmlinks and
                 # sealed volumes in the partition list, and a container sees
-                # host mounts it has no business reading.
-                logger.debug("Skipping mountpoint %s: %s", mountpoint, exc)
-                self._skip_mountpoints.add(mountpoint)
+                # host mounts it has no business reading. Those never recover,
+                # so the backoff grows; a transiently missing mount recovers on
+                # whichever probe first succeeds.
+                backoff = (
+                    min(retry[1] * 2, MOUNT_RETRY_MAX_S)
+                    if retry is not None
+                    else MOUNT_RETRY_INITIAL_S
+                )
+                self._mount_retry[mountpoint] = (now + backoff, backoff)
+                logger.debug(
+                    "Skipping mountpoint %s for %.0fs: %s", mountpoint, backoff, exc
+                )
                 continue
+            if retry is not None:
+                del self._mount_retry[mountpoint]
+                logger.info("Mountpoint %s is readable again", mountpoint)
             suffix = f"disk/{sanitise(strip_host_root(mountpoint, self.host_root))}"
             readings.append(Reading("disk_total_bytes", suffix, usage.total))
             readings.append(Reading("disk_used_bytes", suffix, usage.used))
@@ -378,23 +470,30 @@ class Sampler:
             readings.extend(self._collect_disk_io())
         return readings
 
-    def _snapshot_disk_io(self) -> Optional[Dict[str, Any]]:
+    def _snapshot_disk_io(self) -> Optional[Tuple[float, Dict[str, Any]]]:
+        """Read the counters and stamp them with the instant they were read.
+
+        The stamp travels with the counters so that ``elapsed`` spans exactly
+        the same window as the counter delta. Timing the two independently
+        makes every rate wrong by however long the read took.
+        """
         try:
             counters = psutil.disk_io_counters(perdisk=True)
         except (OSError, RuntimeError):
             logger.debug("Disk I/O counters unavailable", exc_info=True)
             return None
-        if counters:
-            self._prev_disk_io = (time.monotonic(), counters)
-        return counters
+        if not counters:
+            return None
+        self._prev_disk_io = (time.monotonic(), counters)
+        return self._prev_disk_io
 
     def _collect_disk_io(self) -> List[Reading]:
         previous = self._prev_disk_io
-        now = time.monotonic()
-        counters = self._snapshot_disk_io()
-        if not counters or previous is None:
+        snapshot = self._snapshot_disk_io()
+        if snapshot is None or previous is None:
             return []
 
+        now, counters = snapshot
         prev_time, prev_counters = previous
         elapsed = now - prev_time
         if elapsed <= 0:
@@ -424,22 +523,27 @@ class Sampler:
 
     # -- network -----------------------------------------------------------
 
-    def _snapshot_net(self) -> Optional[Dict[str, Any]]:
+    def _snapshot_net(self) -> Optional[Tuple[float, Dict[str, Any]]]:
+        """Read the counters and stamp them with the instant they were read.
+
+        See ``_snapshot_disk_io`` for why the stamp travels with the counters.
+        """
         try:
             counters = psutil.net_io_counters(pernic=True)
         except OSError:
             logger.debug("Network counters unavailable", exc_info=True)
             return None
-        if counters:
-            self._prev_net = (time.monotonic(), counters)
-        return counters
+        if not counters:
+            return None
+        self._prev_net = (time.monotonic(), counters)
+        return self._prev_net
 
     def collect_network(self) -> List[Reading]:
         previous = self._prev_net
-        now = time.monotonic()
-        counters = self._snapshot_net()
-        if not counters:
+        snapshot = self._snapshot_net()
+        if snapshot is None:
             return []
+        now, counters = snapshot
 
         try:
             stats = psutil.net_if_stats()
@@ -524,10 +628,9 @@ class Sampler:
                     if chip.lower() in CPU_TEMP_CHIPS
                     else "integrated_circuit_temperature_celsius"
                 )
-                for index, entry in enumerate(entries):
+                for entry, label in zip(entries, disambiguated_labels(chip, entries)):
                     if entry.current is None:
                         continue
-                    label = sanitise(entry.label or f"{chip}_{index}")
                     readings.append(
                         Reading(
                             subject, f"sensor/{sanitise(chip)}/{label}", entry.current
@@ -536,10 +639,9 @@ class Sampler:
 
         if hasattr(psutil, "sensors_fans"):
             for chip, entries in (psutil.sensors_fans() or {}).items():
-                for index, entry in enumerate(entries):
+                for entry, label in zip(entries, disambiguated_labels(chip, entries)):
                     if entry.current is None:
                         continue
-                    label = sanitise(entry.label or f"{chip}_{index}")
                     readings.append(
                         Reading(
                             "fan_rate_rpm",
@@ -573,18 +675,24 @@ class Sampler:
 
     # -- processes ---------------------------------------------------------
 
-    def _refresh_processes(self) -> None:
+    def _refresh_processes(self) -> Optional[int]:
         """Sync the cached Process objects with the live pid set.
 
         Existing objects are kept so their ``cpu_percent()`` interval stays
         anchored to the previous cycle; new ones are primed with a throwaway
         call so they report a real number next cycle rather than 0.0.
+
+        Returns the number of live pids, which is deliberately *not*
+        ``len(self._procs)``: the cache holds only the processes this uid may
+        open, and under `pid: host` as a non-root user that is a small minority
+        of them. Returns None if the pid table could not be read at all, so the
+        caller can publish nothing rather than a wrong count.
         """
         try:
             live = set(psutil.pids())
         except OSError:
             logger.debug("Could not enumerate pids", exc_info=True)
-            return
+            return None
 
         for pid in list(self._procs):
             if pid not in live:
@@ -598,40 +706,67 @@ class Sampler:
                 continue
             self._procs[pid] = proc
 
-    def collect_processes(self) -> List[Reading]:
-        self._refresh_processes()
-        readings: List[Reading] = [Reading("process_count", "", len(self._procs))]
+        return len(live)
 
-        if self.processes_top_n <= 0:
+    def collect_processes(self, details: bool = True) -> List[Reading]:
+        """Process metrics. ``details`` gates the expensive top-N scan.
+
+        ``process_count`` is one syscall and goes out every cycle; ranking
+        every process on the host costs an ``oneshot()`` and three reads per
+        pid, so the caller runs it on a slower cadence.
+        """
+        live_count = self._refresh_processes()
+
+        readings: List[Reading] = []
+        if live_count is not None:
+            readings.append(Reading("process_count", "", live_count))
+
+        if not details or self.processes_top_n <= 0:
             return readings
 
-        measured: List[Tuple[float, str, float, int]] = []
+        # Readings are keyed by process *name*, so several processes sharing a
+        # name -- python, chrome, postgres -- are one key. Summing them makes
+        # that key mean "all of chrome", which is both what a host monitor
+        # usually wants and the only reading that is well defined: publishing
+        # each process separately would put two different values on the same
+        # key in the same cycle. Aggregating on the sanitised name rather than
+        # the raw one guarantees no two entries can still collide afterwards.
+        totals: Dict[str, List[float]] = {}
         for proc in list(self._procs.values()):
             try:
                 with proc.oneshot():
                     # Can exceed 100.0 on a multi-core host; that is the
                     # documented psutil semantic, not a bug to clamp away.
                     cpu = proc.cpu_percent(interval=None)
-                    measured.append(
-                        (
-                            cpu,
-                            proc.name(),
-                            proc.memory_percent(),
-                            proc.memory_info().rss,
-                        )
-                    )
+                    name = sanitise(proc.name())
+                    mem_pct = proc.memory_percent()
+                    rss = proc.memory_info().rss
             except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
                 continue
+            entry = totals.get(name)
+            if entry is None:
+                totals[name] = [cpu, mem_pct, float(rss)]
+            else:
+                entry[0] += cpu
+                entry[1] += mem_pct
+                entry[2] += rss
 
-        measured.sort(key=lambda item: item[0], reverse=True)
-        for cpu, name, mem_pct, rss in measured[: self.processes_top_n]:
-            suffix = f"process/{sanitise(name)}"
+        ranked = sorted(totals.items(), key=lambda item: item[1][0], reverse=True)
+        for name, (cpu, mem_pct, rss) in ranked[: self.processes_top_n]:
+            suffix = f"process/{name}"
             readings.append(Reading("process_cpu_load_pct", suffix, cpu))
             readings.append(Reading("process_memory_used_pct", suffix, mem_pct))
             readings.append(Reading("process_memory_used_bytes", suffix, rss))
 
         return readings
 
+
+# The fast tier. Only these two: both are a single cheap /proc read, and both
+# move fast enough that a 1 s cadence says something a 5 s one does not. Disk
+# usage and chip temperature deliberately stay on --interval -- neither changes
+# meaningfully within a second, and sampling them costs a statvfs per mountpoint
+# and a full /sys/class/hwmon walk respectively.
+VITALS_SUBJECTS = frozenset({"cpu_load_pct", "memory_used_pct"})
 
 # The connector's full publishing surface: every subject any collector can
 # emit, whether or not the attached hardware currently produces data for it.

@@ -128,6 +128,43 @@ def test_publishers_are_declared_once_per_key(session):
     assert publisher.publishers == {}
 
 
+def test_liveliness_advertises_every_emitted_subject(session):
+    """Three-tier liveliness: one token per subject the connector can publish.
+
+    Capability, not activity -- a machine with no battery still advertises the
+    battery subjects, so the assertion is against EMITTED_SUBJECTS rather than
+    against whatever this host happens to produce.
+    """
+    import time
+
+    from keelson.scaffolding.liveliness import declare_liveliness
+
+    from keelson_connector_pc.collectors import EMITTED_SUBJECTS
+
+    seen = []
+    sub = session.liveliness().declare_subscriber(
+        f"{REALM}/@v0/{ENTITY}/**", lambda s: seen.append(str(s.key_expr))
+    )
+    try:
+        with declare_liveliness(
+            session,
+            REALM,
+            ENTITY,
+            "pc",
+            pubsub_subjects=sorted(EMITTED_SUBJECTS),
+        ):
+            time.sleep(1.0)
+            advertised = {
+                k.split("/pubsub/")[1].rsplit("/", 1)[0]
+                for k in seen
+                if "/pubsub/" in k
+            }
+            missing = EMITTED_SUBJECTS - advertised
+            assert not missing, f"no liveliness token for: {sorted(missing)}"
+    finally:
+        sub.undeclare()
+
+
 def test_a_live_sample_reaches_the_bus_decodable(session, collected):
     """The real thing: sample this machine and confirm every key a consumer
     picks up resolves to a schema and decodes."""
@@ -138,7 +175,7 @@ def test_a_live_sample_reaches_the_bus_decodable(session, collected):
     time.sleep(0.3)
 
     publisher = Publisher(session, REALM, ENTITY, "pc")
-    readings = sampler.sample() + collect_host_info()
+    readings = sampler.sample_vitals() + sampler.sample() + collect_host_info()
     assert readings, "sampling this host produced nothing at all"
     assert publisher.publish(readings) == len(readings)
 

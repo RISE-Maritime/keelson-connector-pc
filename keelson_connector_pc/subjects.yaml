@@ -4,13 +4,24 @@
 # source_id distinguishes the instance within the host, e.g.
 #   pc            pc/core/3      pc/disk/data    pc/net/eth0
 #   pc/battery    pc/sensor/k10temp             pc/process/python
+# Process readings are summed across every process sharing a name, so
+# pc/process/python means "all python processes".
 #
-# This file is a verbatim copy of the block added to
-# keelson/messages/subjects.yaml. It is registered at startup via
-# keelson.add_well_known_subjects_and_proto_definitions() so the connector
-# resolves its own subjects even when the installed keelson release predates
-# them. Once a keelson release ships these, this file becomes redundant --
-# harmless, since registration is an idempotent dict update.
+# !! NOT YET UPSTREAM. None of the subjects below exist in
+# keelson/messages/subjects.yaml as of keelson main. Registering this file at
+# startup via keelson.add_well_known_subjects_and_proto_definitions() makes
+# THIS process resolve them; it does nothing for any other. Until these land
+# upstream, keelson2mcap and keelson2foxglove resolve schemas from their own
+# copy of the registry, find nothing, and silently DROP every reading this
+# connector publishes -- so nothing here can be recorded or plotted.
+#
+# That PR is open: https://github.com/RISE-Maritime/keelson/pull/240
+# (branch feat/host-metric-subjects -> dev). It needs no qos.yaml entries --
+# qos.yaml is sparse and anything unlisted inherits the `default` profile,
+# which is the right stance for routine measurement telemetry. Once it merges
+# AND a keelson release ships, this file becomes redundant -- harmless, since
+# registration is an
+# idempotent dict update.
 #
 # Naming follows protocol-specification.md 2.2.2 <entity>_<property>_<unit>.
 # Every subject maps to an existing keelson.Timestamped* primitive; no new

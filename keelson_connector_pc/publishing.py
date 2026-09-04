@@ -10,12 +10,17 @@ know fails loudly instead of going out mistyped.
 import logging
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Set
+from typing import Any, Callable, Dict, Iterable, Optional, Set
 
 import yaml
 import zenoh
 
 import keelson
+
+# Subject-driven QoS: the profile comes from the subject in the key, via
+# messages/qos.yaml, rather than being hand-set per connector. The 0.5.3-era
+# fallback that took plain Zenoh defaults went with the pin bump.
+from keelson.scaffolding import declare_publisher as _declare_publisher
 from keelson.payloads.Primitives_pb2 import (
     TimestampedBool,
     TimestampedDuration,
@@ -31,20 +36,6 @@ from .collectors import Reading
 logger = logging.getLogger("pc2keelson")
 
 SUBJECTS_PATH = Path(__file__).resolve().parent / "subjects.yaml"
-
-try:  # keelson >= 0.5.4 derives QoS from the subject in the key
-    from keelson.scaffolding import declare_publisher as _declare_publisher
-except ImportError:  # keelson 0.5.3, the newest release on PyPI
-
-    def _declare_publisher(session: zenoh.Session, key: str, **kwargs):
-        """Fallback for SDKs without subject-driven QoS.
-
-        Deliberately does not set priority or congestion control: hand-tuned
-        per-connector QoS is exactly what ``messages/qos.yaml`` exists to
-        replace, so this takes the Zenoh defaults and the import above starts
-        applying real profiles the moment a newer keelson is installed.
-        """
-        return session.declare_publisher(key, **kwargs)
 
 
 def register_subjects() -> Set[str]:
@@ -175,13 +166,17 @@ class Publisher:
             logger.debug("Declared publisher for %s", key)
         return self.publishers[key]
 
-    def publish(self, readings: Iterable[Reading], timestamp_ns: int = None) -> int:
+    def publish(
+        self, readings: Iterable[Reading], timestamp_ns: Optional[int] = None
+    ) -> int:
         """Publish every reading, stamped with one shared sample time.
 
         One bad reading must not drop the rest of the cycle, so failures are
         logged per reading. Returns the number actually published.
         """
-        timestamp_ns = timestamp_ns or time.time_ns()
+        # `is None`, not `or`: an explicit 0 is a legitimate epoch timestamp.
+        if timestamp_ns is None:
+            timestamp_ns = time.time_ns()
         published = 0
         for reading in readings:
             key = self.key_for(reading.subject, reading.source_suffix)

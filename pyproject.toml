@@ -10,13 +10,17 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    # 0.5.3 is the newest keelson actually published to PyPI; 0.5.4 was tagged
-    # but never released. publishing.py picks up subject-driven QoS on its own
-    # if a newer SDK is installed.
-    "keelson>=0.5.3",
+    # 0.6.0rc15 is the PEP440 spelling of the 0.6.0-pre.15 tag -- the same
+    # build the rest of the fleet runs (ghcr.io/rise-maritime/keelson:0.6.0-pre.15).
+    # Required, not merely preferred: it is the first release carrying the
+    # three-tier liveliness API this connector declares its subjects with.
+    "keelson>=0.6.0rc15",
     "psutil>=6.0",
     "pyyaml",
 ]
+
+[project.scripts]
+pc2keelson = "keelson_connector_pc.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -26,6 +30,10 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
+# `where` is explicit because it defaults to the build's working directory. A
+# build run from / (as a Dockerfile without a WORKDIR does) then walks the
+# whole filesystem looking for packages before applying `include`.
+where = ["."]
 include = ["keelson_connector_pc*"]
 
 [tool.setuptools.package-data]

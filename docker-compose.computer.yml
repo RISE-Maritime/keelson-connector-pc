@@ -13,33 +13,55 @@
 # bind-mount prefix so mountpoints are labelled the way the host names them
 # (/host/root/var reports as /var, not as mnt_host_root_var).
 #
+# --vitals-interval is the fast tier: cpu_load_pct and memory_used_pct only,
+# every second, so a live view does not show the host as stale between the
+# 5-second samples of everything else. It is also the loop's base period.
+#
 # On macOS and Windows, Docker runs a Linux VM, so this reports that VM rather
 # than your laptop. Run the connector directly on the host there:
 #   uv run bin/pc2keelson.py -r rise -e $(hostname)
 
 services:
   pc:
+   # image: ghcr.io/rise-maritime/keelson-connector-pc:0.1.0
+    # For local development, comment out `image` above and uncomment this:
     build: .
     container_name: keelson-connector-pc
     restart: unless-stopped
     network_mode: host
     pid: host
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
     volumes:
       - /proc:/host/proc:ro
       - /:/host/root:ro
+    # --mode client, not the default peer. The platform runs a zenohd router on
+    # the host, and this connector declares a liveliness token: an older peer
+    # doing that makes a 1.10.0 router loop on
+    #   "Received token with interest id from south-bound face"
+    # and drop that face's pubsub data on the floor -- the connector samples and
+    # publishes happily, nothing ever arrives. See the same note in sealog-9's
+    # docker-compose.nmea-ardusimple.yml. A client session over the same
+    # endpoint routes fine. Revisit once the zenoh in this image is >= 1.9.
     command:
       - >
         pc2keelson
         --log-level 20
         -r rise
-        -e nuc01
+        -e sealog-9
         -s pc
         --interval 5
+        --vitals-interval 1
         --procfs-path /host/proc
         --host-root /host/root
         --disk-mountpoint /host/root
+        --mode client
+        --connect tcp/127.0.0.1:7447
 
-# To reach a router that multicast scouting cannot find, append to `command`:
-#   --mode client --connect tcp/192.168.1.10:7447
+# Without a router to connect to, drop the two flags above and the session
+# falls back to peer mode with multicast scouting.
 # For access control or QoS the flags cannot express, mount a JSON5 config and
 # pass --zenoh-config /etc/zenoh/fleet.json5 (or set ZENOH_CONFIG).

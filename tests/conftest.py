@@ -5,10 +5,8 @@ registry is process-global module state, and every test that resolves a schema
 or builds a key depends on it.
 """
 
-import importlib.util
 import pathlib
 import sys
-from importlib.machinery import SourceFileLoader
 
 import pytest
 
@@ -26,15 +24,13 @@ def registered_subjects():
 
 @pytest.fixture(scope="session")
 def pc2keelson():
-    """The entry-point script, loaded as a module.
+    """The entry point, which is a module in the package.
 
-    `bin/pc2keelson.py` is a standalone executable rather than part of the
-    package, so it is loaded by path -- the same approach the keelson monorepo
-    connectors use for their `bin/` scripts.
+    It used to be loaded by path from `bin/`, because the script was a
+    standalone executable. It is now `keelson_connector_pc.cli`, which is what
+    `[project.scripts]` turns into the `pc2keelson` command, so an ordinary
+    import tests the same code the container runs.
     """
-    path = REPO_ROOT / "bin" / "pc2keelson.py"
-    loader = SourceFileLoader("pc2keelson", str(path))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from keelson_connector_pc import cli
+
+    return cli
