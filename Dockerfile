@@ -7,6 +7,12 @@ RUN apt-get update \
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# Never build from /. With no WORKDIR the project root is the filesystem root,
+# and setuptools' package discovery walks it with os.walk(followlinks=True):
+# /proc/<pid>/root links back to /, so the walk never ends and the build is
+# eventually OOM-killed ("cannot allocate memory" after ~100 min under QEMU).
+WORKDIR /app
+
 # The package directory is copied before the install because, unlike connectors
 # whose bin/ scripts are self-contained, pc2keelson imports keelson_connector_pc
 # and setuptools needs the sources present to install it.

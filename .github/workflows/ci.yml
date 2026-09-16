@@ -19,17 +19,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      # A project venv from uv.lock, not --system: the runners' Linux and
+      # macOS Pythons are externally managed (PEP 668) and refuse the install.
       - name: Install
-        run: uv pip install --system ".[dev]"
+        run: uv sync --locked --extra dev --python 3.13
       - name: Lint
         if: matrix.os == 'ubuntu-latest'
         run: |
-          black --check bin keelson_connector_pc tests
-          pylint bin keelson_connector_pc
+          uv run --locked black --check bin keelson_connector_pc tests
+          uv run --locked pylint bin keelson_connector_pc
       - name: Unit tests
-        run: pytest -vv -m "not e2e"
+        run: uv run --locked pytest -vv -m "not e2e"
       - name: End-to-end tests
-        run: pytest -vv -m e2e
+        run: uv run --locked pytest -vv -m e2e
 
   docker-build:
     runs-on: ubuntu-latest
