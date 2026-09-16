@@ -22,7 +22,7 @@ black bin keelson_connector_pc tests
 pylint bin keelson_connector_pc
 
 uv run bin/pc2keelson.py -r rise -e $(hostname) --interval 2 --log-level 10
-docker compose up
+docker compose -f docker-compose.computer.yml up
 ```
 
 ## Architecture
@@ -114,7 +114,7 @@ At 0.5.3 the SDK does **not** have:
 ## Containerisation
 
 A container sees its own namespaces, so a naive run reports the *container*.
-`docker-compose.yml` sets `pid: host` and `network_mode: host` and bind-mounts
+`docker-compose.computer.yml` sets `pid: host` and `network_mode: host` and bind-mounts
 the host's `/proc` and root; `--procfs-path` points psutil at the former and
 `--host-root` strips the bind-mount prefix from mountpoint labels. On macOS and
 Windows Docker runs a Linux VM, so run the connector on the host there.

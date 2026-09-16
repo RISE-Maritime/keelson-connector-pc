@@ -77,7 +77,10 @@ def test_cpu_frequency_below_plausibility_floor_is_withheld(monkeypatch, caplog)
     placeholders. Publishing 4 on a subject named _mhz would claim a 4 MHz CPU."""
     monkeypatch.setattr(psutil, "cpu_percent", lambda **kw: 12.5)
     monkeypatch.setattr(
-        psutil, "cpu_freq", lambda: SimpleNamespace(current=4, min=1, max=4)
+        psutil,
+        "cpu_freq",
+        lambda: SimpleNamespace(current=4, min=1, max=4),
+        raising=False,
     )
     monkeypatch.setattr(psutil, "getloadavg", lambda: (1.0, 2.0, 3.0))
 
@@ -92,6 +95,7 @@ def test_plausible_cpu_frequency_is_published(monkeypatch):
         psutil,
         "cpu_freq",
         lambda: SimpleNamespace(current=3600.0, min=800.0, max=4200.0),
+        raising=False,
     )
     monkeypatch.setattr(psutil, "getloadavg", lambda: (1.0, 2.0, 3.0))
 
@@ -108,12 +112,25 @@ def test_cpu_freq_unsupported_does_not_kill_the_group(monkeypatch):
         raise NotImplementedError
 
     monkeypatch.setattr(psutil, "cpu_percent", lambda **kw: 7.0)
-    monkeypatch.setattr(psutil, "cpu_freq", boom)
+    monkeypatch.setattr(psutil, "cpu_freq", boom, raising=False)
     monkeypatch.setattr(psutil, "getloadavg", lambda: (0.5, 0.6, 0.7))
 
     readings = Sampler().collect_cpu()
     assert values(readings, "cpu_load_pct") == [7.0]
     assert values(readings, "cpu_load_average_1min") == [0.5]
+    assert values(readings, "cpu_frequency_mhz") == []
+
+
+def test_cpu_freq_absent_from_psutil_does_not_kill_the_group(monkeypatch):
+    """Some psutil builds do not define cpu_freq at all -- the GitHub macOS
+    runner is one. That is an AttributeError, not NotImplementedError, and the
+    rest of the CPU group must still be published."""
+    monkeypatch.setattr(psutil, "cpu_percent", lambda **kw: 7.0)
+    monkeypatch.delattr(psutil, "cpu_freq", raising=False)
+    monkeypatch.setattr(psutil, "getloadavg", lambda: (0.5, 0.6, 0.7))
+
+    readings = Sampler().collect_cpu()
+    assert values(readings, "cpu_load_pct") == [7.0]
     assert values(readings, "cpu_frequency_mhz") == []
 
 
@@ -123,7 +140,7 @@ def test_per_core_uses_one_source_id_per_core(monkeypatch):
         "cpu_percent",
         lambda **kw: [10.0, 20.0, 30.0] if kw.get("percpu") else 20.0,
     )
-    monkeypatch.setattr(psutil, "cpu_freq", lambda: None)
+    monkeypatch.setattr(psutil, "cpu_freq", lambda: None, raising=False)
     monkeypatch.setattr(psutil, "getloadavg", lambda: (0.0, 0.0, 0.0))
 
     readings = Sampler(per_core=True).collect_cpu()

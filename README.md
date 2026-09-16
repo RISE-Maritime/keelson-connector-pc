@@ -94,8 +94,8 @@ uv run bin/pc2keelson.py -r rise -e nuc01 \
 ```
 
 ```bash
-# In Docker — see docker-compose.yml for why the mounts and namespaces matter
-docker compose up
+# In Docker — see docker-compose.computer.yml for why the mounts and namespaces matter
+docker compose -f docker-compose.computer.yml up
 ```
 
 ### Key expressions
@@ -156,7 +156,7 @@ resolves its own schemas even on an SDK release that predates them.
 
 A container sees its own namespaces. Left alone, the connector would
 faithfully report the *container's* CPU share, process list and overlay
-filesystem. `docker-compose.yml` sets `pid: host` and `network_mode: host` and
+filesystem. `docker-compose.computer.yml` sets `pid: host` and `network_mode: host` and
 bind-mounts the host's `/proc` and root, which `--procfs-path` and
 `--host-root` then point the connector at.
 
